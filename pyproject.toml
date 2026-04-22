@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentfirst-v0"
+version = "0.1.0"
+description = "AgentFirst v0 Stage 1 schema and storage scaffold"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+agentfirst-store = "agentfirst_storage.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
