@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 
-from agentfirst_storage import AgentFirstStore, TelegramChannelService, TaskEngine
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from agentfirst_storage import AgentFirstStore, OperatorSurface, TelegramChannelService, TaskEngine
 
 
 def main() -> None:
@@ -18,6 +22,31 @@ def main() -> None:
 
         admin = store.bootstrap_admin("Stage 4 Primary", "America/New_York")
         telegram = TelegramChannelService(store)
+        enrollment = telegram.issue_enrollment_challenge(
+            telegram_user_id="424242",
+            display_name="Telegram User",
+            username="stage4_user",
+            requested_by_type="user",
+            requested_by_ref=admin["user_id"],
+        )
+        verified = telegram.verify_enrollment_challenge(
+            enrollment["enrollment_id"],
+            challenge_secret=enrollment["challenge_material"]["challenge_secret"],
+            challenge_nonce=enrollment["challenge_material"]["challenge_nonce"],
+            actor_type="system",
+            actor_ref="stage4_validation_pairing",
+        )
+        OperatorSurface(store).resolve_approval(
+            verified["metadata_json"]["approval_record_id"],
+            actor_user_id=admin["user_id"],
+            status="approved",
+            confirmation="APPROVED",
+        )
+        telegram.approve_enrollment(
+            verified["enrollment_id"],
+            user_id=admin["user_id"],
+            approver_user_id=admin["user_id"],
+        )
 
         inbound = telegram.ingest_message(
             {

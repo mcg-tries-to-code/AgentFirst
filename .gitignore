@@ -8,3 +8,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 .DS_Store
+
+# First-publication default: keep local workflow orchestration artifacts out
+# of the initial GitHub snapshot unless deliberately curated later.
+toolflow/

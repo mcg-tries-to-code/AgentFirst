@@ -83,7 +83,7 @@ class PolicyEngine:
         self.store.initialize()
         with self.store.connect() as conn:
             destination = self._resolve_destination(action, conn)
-            policies = self._collect_policies(action.sponsoring_user_id, conn)
+            policies = self._collect_policies(action.sponsoring_user_id, action, conn)
             classification_rules = self._collect_classification_rules(action, conn)
 
             resolved = self._resolve_decision(action, destination, policies, classification_rules)
@@ -169,6 +169,12 @@ class PolicyEngine:
         tool_capability_id: str,
         input_ref: str | None = None,
         output_ref: str | None = None,
+        *,
+        authority_policy_decision_id: str | None = None,
+        operation: str | None = None,
+        scope: dict[str, Any] | None = None,
+        provenance: dict[str, Any] | None = None,
+        outcome: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if action.action_type != "invoke_tool":
             raise ValueError("record_tool_invocation requires action_type='invoke_tool'")
@@ -187,9 +193,30 @@ class PolicyEngine:
                 "tool_capability_id": tool_capability_id,
                 "invoker_agent_id": action.actor_ref if action.actor_type == "agent" else None,
                 "sponsoring_user_id": action.sponsoring_user_id,
+                "authority_policy_decision_id": authority_policy_decision_id,
+                "operation": operation,
+                "scope_json": scope
+                or {
+                    "object_type": action.object_type,
+                    "object_ref": action.object_ref,
+                    "destination_type": action.destination_type,
+                    "destination_identity": action.destination_identity,
+                },
                 "input_ref": input_ref,
                 "output_ref": output_ref,
                 "policy_decision_refs_json": [result["decision"]["policy_decision_id"]],
+                "provenance_json": {
+                    "tool_capability_id": tool_capability_id,
+                    "sponsoring_user_id": action.sponsoring_user_id,
+                    "actor_type": action.actor_type,
+                    "actor_ref": action.actor_ref,
+                    "authority_policy_decision_id": authority_policy_decision_id,
+                    "policy_decision_id": result["decision"]["policy_decision_id"],
+                    "destination_type": action.destination_type,
+                    "destination_identity": action.destination_identity,
+                    **(provenance or {}),
+                },
+                "outcome_json": outcome or {"policy_decision": decision, "executed": False},
                 "status": status,
             },
             actor_type=action.actor_type,
@@ -197,7 +224,7 @@ class PolicyEngine:
         )
         return {**result, "tool_invocation": invocation}
 
-    def _collect_policies(self, sponsoring_user_id: str, conn: Any) -> list[dict[str, Any]]:
+    def _collect_policies(self, sponsoring_user_id: str, action: GovernedAction, conn: Any) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT * FROM policies
@@ -220,7 +247,45 @@ class PolicyEngine:
             """,
             (sponsoring_user_id,),
         ).fetchall()
-        return [self.store._decode_row(row) for row in rows]
+        policies = [self.store._decode_row(row) for row in rows]
+        seen = {policy["policy_id"] for policy in policies}
+        for policy_id in self._object_policy_refs(action, conn):
+            if policy_id in seen:
+                continue
+            row = conn.execute(
+                "SELECT * FROM policies WHERE policy_id = ? AND status = 'active'",
+                (policy_id,),
+            ).fetchone()
+            if row is not None:
+                policies.append(self.store._decode_row(row))
+                seen.add(policy_id)
+        return policies
+
+    def _object_policy_refs(self, action: GovernedAction, conn: Any) -> list[str]:
+        if not action.object_type or not action.object_ref:
+            return []
+        object_table = {
+            "project": "projects",
+            "commitment": "commitments",
+            "artifact": "artifacts",
+            "knowledge_corpus": "knowledge_corpora",
+        }.get(action.object_type)
+        if object_table is None:
+            return []
+        row = self.store.get_by_id(object_table, action.object_ref, conn=conn)
+        if row is None:
+            return []
+        refs = list(row.get("policy_refs_json", []))
+        if action.object_type in {"commitment", "artifact"}:
+            project_ids: list[str] = []
+            if row.get("project_id"):
+                project_ids.append(row["project_id"])
+            project_ids.extend(row.get("project_refs_json", []))
+            for project_id in dict.fromkeys(project_ids):
+                project = self.store.get_by_id("projects", project_id, conn=conn)
+                if project:
+                    refs.extend(project.get("policy_refs_json", []))
+        return list(dict.fromkeys(refs))
 
     def _collect_classification_rules(self, action: GovernedAction, conn: Any) -> list[dict[str, Any]]:
         if action.content_classification == "external_confidential" and action.origin_entity_ref:

@@ -1,6 +1,6 @@
 """SQLite schema for the AgentFirst v0 canonical and audit stores."""
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DDL = """
 PRAGMA foreign_keys = ON;
@@ -32,6 +32,26 @@ WHERE primary_user_flag = 1;
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_users_authority_tier ON users(authority_tier);
 
+CREATE TABLE IF NOT EXISTS google_connections (
+    google_connection_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(user_id),
+    google_account_email TEXT NOT NULL,
+    services_json TEXT NOT NULL DEFAULT '[]',
+    scopes_json TEXT NOT NULL DEFAULT '[]',
+    credential_ref TEXT,
+    credential_secret_id TEXT REFERENCES secret_records(secret_id),
+    policy_refs_json TEXT NOT NULL DEFAULT '[]',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'revoked')),
+    connected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_google_connections_user_email
+ON google_connections(user_id, google_account_email);
+CREATE INDEX IF NOT EXISTS idx_google_connections_user_status
+ON google_connections(user_id, status);
+
 CREATE TABLE IF NOT EXISTS shared_contexts (
     shared_context_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -52,6 +72,9 @@ CREATE TABLE IF NOT EXISTS shared_context_members (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (shared_context_id, member_type, member_ref)
 );
+
+CREATE INDEX IF NOT EXISTS idx_shared_context_members_member
+ON shared_context_members(member_type, member_ref, status);
 
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT PRIMARY KEY,
@@ -139,12 +162,70 @@ CREATE TABLE IF NOT EXISTS destination_trust_tiers (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_destination_identity ON destination_trust_tiers(destination_type, destination_identity);
 
+CREATE TABLE IF NOT EXISTS external_channel_discoveries (
+    discovery_id TEXT PRIMARY KEY,
+    channel_type TEXT NOT NULL,
+    address TEXT NOT NULL,
+    display_name TEXT,
+    first_seen_metadata_json TEXT NOT NULL DEFAULT '{}',
+    last_seen_metadata_json TEXT NOT NULL DEFAULT '{}',
+    enrollment_id TEXT,
+    status TEXT NOT NULL DEFAULT 'discovered' CHECK (status IN ('discovered', 'pairing_requested', 'enrollment_started', 'promoted', 'ignored', 'revoked')),
+    first_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    last_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_external_discovery_address ON external_channel_discoveries(channel_type, address);
+CREATE INDEX IF NOT EXISTS idx_external_discovery_status ON external_channel_discoveries(status, last_seen_at);
+
+CREATE TABLE IF NOT EXISTS channel_enrollments (
+    enrollment_id TEXT PRIMARY KEY,
+    channel_type TEXT NOT NULL,
+    address TEXT NOT NULL,
+    discovery_id TEXT REFERENCES external_channel_discoveries(discovery_id),
+    user_id TEXT REFERENCES users(user_id),
+    channel_identity_id TEXT REFERENCES channel_identities(channel_identity_id),
+    state TEXT NOT NULL CHECK (state IN (
+        'discovered',
+        'pairing_requested',
+        'challenge_issued',
+        'challenge_verified',
+        'awaiting_owner_approval',
+        'enrolled',
+        'suspended',
+        'rebinding_required',
+        'recovery_requested',
+        'revoked',
+        'denied',
+        'expired'
+    )),
+    challenge_ref TEXT,
+    challenge_status TEXT NOT NULL DEFAULT 'not_issued' CHECK (challenge_status IN ('not_issued', 'issued', 'verified', 'expired', 'revoked')),
+    owner_approval_status TEXT NOT NULL DEFAULT 'not_requested' CHECK (owner_approval_status IN ('not_requested', 'requested', 'approved', 'denied', 'revoked')),
+    approved_by_user_id TEXT REFERENCES users(user_id),
+    binding_generation INTEGER NOT NULL DEFAULT 1,
+    replaces_channel_identity_id TEXT REFERENCES channel_identities(channel_identity_id),
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'completed', 'suspended', 'revoked', 'denied', 'expired')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_enrollment_active_address
+ON channel_enrollments(channel_type, address)
+WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_channel_enrollment_user ON channel_enrollments(user_id, state);
+CREATE INDEX IF NOT EXISTS idx_channel_enrollment_state ON channel_enrollments(state, status);
+
 CREATE TABLE IF NOT EXISTS channel_identities (
     channel_identity_id TEXT PRIMARY KEY,
     user_id TEXT REFERENCES users(user_id),
     agent_id TEXT REFERENCES agents(agent_id),
     channel_type TEXT NOT NULL,
     address TEXT NOT NULL,
+    enrollment_id TEXT REFERENCES channel_enrollments(enrollment_id),
+    enrollment_state TEXT NOT NULL DEFAULT 'legacy_active' CHECK (enrollment_state IN ('legacy_active', 'enrolled', 'suspended', 'rebinding_required', 'revoked')),
+    binding_generation INTEGER NOT NULL DEFAULT 1,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     routing_policy_refs_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'active',
@@ -255,6 +336,62 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_thread_time ON messages(thread_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_classification ON messages(classification);
+
+CREATE TABLE IF NOT EXISTS conversation_lanes (
+    lane_id TEXT PRIMARY KEY,
+    owner_scope_type TEXT NOT NULL CHECK (owner_scope_type IN ('user', 'agent', 'shared_context', 'project')),
+    owner_scope_ref TEXT NOT NULL,
+    lane_key TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'general',
+    behavior_json TEXT NOT NULL DEFAULT '{}',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(owner_scope_type, owner_scope_ref, lane_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_lanes_owner
+ON conversation_lanes(owner_scope_type, owner_scope_ref, status);
+
+CREATE TABLE IF NOT EXISTS lane_active_contexts (
+    active_context_id TEXT PRIMARY KEY,
+    lane_id TEXT NOT NULL REFERENCES conversation_lanes(lane_id),
+    session_generation INTEGER NOT NULL DEFAULT 1,
+    context_json TEXT NOT NULL DEFAULT '{}',
+    runtime_state_json TEXT NOT NULL DEFAULT '{}',
+    source_refs_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cleared', 'reinitialized')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_lane_active_contexts_lane
+ON lane_active_contexts(lane_id, status, session_generation);
+
+CREATE TABLE IF NOT EXISTS lane_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    lane_id TEXT NOT NULL REFERENCES conversation_lanes(lane_id),
+    active_context_id TEXT REFERENCES lane_active_contexts(active_context_id),
+    reset_command TEXT NOT NULL CHECK (reset_command IN ('/new', '/restart')),
+    owner_scope_type TEXT NOT NULL CHECK (owner_scope_type IN ('user', 'agent', 'shared_context', 'project')),
+    owner_scope_ref TEXT NOT NULL,
+    lifecycle_layer TEXT NOT NULL DEFAULT 'mid_term_checkpoint',
+    summary_ref TEXT NOT NULL,
+    checkpoint_payload_json TEXT NOT NULL DEFAULT '{}',
+    preserved_refs_json TEXT NOT NULL DEFAULT '[]',
+    dropped_ephemeral_json TEXT NOT NULL DEFAULT '[]',
+    memory_record_id TEXT REFERENCES memory_records(memory_id),
+    wiki_candidate_refs_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'captured' CHECK (status IN ('captured', 'empty')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_lane_checkpoints_lane
+ON lane_checkpoints(lane_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_lane_checkpoints_owner
+ON lane_checkpoints(owner_scope_type, owner_scope_ref, created_at);
 
 CREATE TABLE IF NOT EXISTS progress_updates (
     progress_update_id TEXT PRIMARY KEY,
@@ -398,9 +535,14 @@ CREATE TABLE IF NOT EXISTS tool_invocations (
     tool_capability_id TEXT NOT NULL REFERENCES tool_capabilities(tool_capability_id),
     invoker_agent_id TEXT REFERENCES agents(agent_id),
     sponsoring_user_id TEXT NOT NULL REFERENCES users(user_id),
+    authority_policy_decision_id TEXT REFERENCES policy_decisions(policy_decision_id),
+    operation TEXT,
+    scope_json TEXT NOT NULL DEFAULT '{}',
     input_ref TEXT,
     output_ref TEXT,
     policy_decision_refs_json TEXT NOT NULL DEFAULT '[]',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    outcome_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'requested',
     started_at TEXT,
     ended_at TEXT,
@@ -409,6 +551,39 @@ CREATE TABLE IF NOT EXISTS tool_invocations (
 
 CREATE INDEX IF NOT EXISTS idx_tool_invocations_capability ON tool_invocations(tool_capability_id, status);
 CREATE INDEX IF NOT EXISTS idx_tool_invocations_sponsor ON tool_invocations(sponsoring_user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS google_workspace_actions (
+    google_workspace_action_id TEXT PRIMARY KEY,
+    service TEXT NOT NULL CHECK (service IN ('gmail', 'calendar', 'contacts', 'drive')),
+    operation TEXT NOT NULL,
+    actor_user_id TEXT NOT NULL REFERENCES users(user_id),
+    target_user_id TEXT NOT NULL REFERENCES users(user_id),
+    google_connection_id TEXT REFERENCES google_connections(google_connection_id),
+    google_connection_user_id TEXT REFERENCES users(user_id),
+    google_account_email TEXT,
+    tool_invocation_id TEXT REFERENCES tool_invocations(tool_invocation_id),
+    authority_policy_decision_id TEXT REFERENCES policy_decisions(policy_decision_id),
+    status TEXT NOT NULL CHECK (status IN (
+        'authority_denied',
+        'policy_denied',
+        'awaiting_approval',
+        'policy_allowed',
+        'completed',
+        'failed'
+    )),
+    input_json TEXT NOT NULL DEFAULT '{}',
+    result_json TEXT NOT NULL DEFAULT '{}',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_google_workspace_actions_connection
+ON google_workspace_actions(google_connection_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_google_workspace_actions_actor
+ON google_workspace_actions(actor_user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_google_workspace_actions_target
+ON google_workspace_actions(target_user_id, created_at);
 
 CREATE TABLE IF NOT EXISTS sub_agent_runs (
     sub_agent_run_id TEXT PRIMARY KEY,
@@ -448,6 +623,26 @@ CREATE TABLE IF NOT EXISTS memory_records (
 
 CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_records(owner_scope_type, owner_scope_ref, canonicality);
 CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_records(status);
+
+CREATE TABLE IF NOT EXISTS memory_retrievals (
+    retrieval_id TEXT PRIMARY KEY,
+    actor_user_id TEXT NOT NULL REFERENCES users(user_id),
+    sponsoring_user_id TEXT NOT NULL REFERENCES users(user_id),
+    query TEXT NOT NULL,
+    requested_scopes_json TEXT NOT NULL DEFAULT '[]',
+    allowed_scopes_json TEXT NOT NULL DEFAULT '[]',
+    denied_scopes_json TEXT NOT NULL DEFAULT '[]',
+    authority_policy_decision_refs_json TEXT NOT NULL DEFAULT '[]',
+    result_refs_json TEXT NOT NULL DEFAULT '[]',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK (status IN ('returned', 'denied', 'empty')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_retrievals_actor
+ON memory_retrievals(actor_user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_retrievals_sponsor
+ON memory_retrievals(sponsoring_user_id, created_at);
 
 CREATE TABLE IF NOT EXISTS knowledge_corpora (
     corpus_id TEXT PRIMARY KEY,
@@ -501,6 +696,155 @@ CREATE TABLE IF NOT EXISTS research_runs (
 
 CREATE INDEX IF NOT EXISTS idx_research_runs_requestor ON research_runs(requestor_user_id, status);
 CREATE INDEX IF NOT EXISTS idx_research_runs_agent ON research_runs(sponsoring_agent_id, status);
+
+CREATE TABLE IF NOT EXISTS model_provider_preferences (
+    model_preference_id TEXT PRIMARY KEY,
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('user', 'agent', 'task')),
+    scope_ref TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT 'general',
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 100,
+    fallback_routes_json TEXT NOT NULL DEFAULT '[]',
+    constraints_json TEXT NOT NULL DEFAULT '{}',
+    rationale_summary TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'revoked')),
+    created_by_type TEXT NOT NULL CHECK (created_by_type IN ('user', 'agent', 'system')),
+    created_by_ref TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_preferences_scope
+ON model_provider_preferences(scope_type, scope_ref, purpose, status, priority);
+CREATE INDEX IF NOT EXISTS idx_model_preferences_provider
+ON model_provider_preferences(provider, model, status);
+
+CREATE TABLE IF NOT EXISTS model_route_decisions (
+    model_route_decision_id TEXT PRIMARY KEY,
+    model_preference_id TEXT REFERENCES model_provider_preferences(model_preference_id),
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'agent', 'system')),
+    actor_ref TEXT NOT NULL,
+    sponsoring_user_id TEXT NOT NULL REFERENCES users(user_id),
+    requesting_agent_id TEXT REFERENCES agents(agent_id),
+    scope_type TEXT NOT NULL CHECK (scope_type IN ('user', 'agent', 'task')),
+    scope_ref TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT 'general',
+    preferred_provider TEXT,
+    preferred_model TEXT,
+    selected_provider TEXT,
+    selected_model TEXT,
+    fallback_used INTEGER NOT NULL DEFAULT 0 CHECK (fallback_used IN (0, 1)),
+    fallback_reason TEXT,
+    disclosure_summary TEXT NOT NULL,
+    policy_decision_id TEXT REFERENCES policy_decisions(policy_decision_id),
+    approval_record_id TEXT REFERENCES approval_records(approval_record_id),
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    outcome_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK (status IN ('selected', 'awaiting_approval', 'denied', 'failed')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_route_decisions_sponsor
+ON model_route_decisions(sponsoring_user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_model_route_decisions_scope
+ON model_route_decisions(scope_type, scope_ref, purpose, created_at);
+CREATE INDEX IF NOT EXISTS idx_model_route_decisions_policy
+ON model_route_decisions(policy_decision_id);
+
+CREATE TABLE IF NOT EXISTS model_executions (
+    model_execution_id TEXT PRIMARY KEY,
+    model_route_decision_id TEXT NOT NULL REFERENCES model_route_decisions(model_route_decision_id),
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'agent', 'system')),
+    actor_ref TEXT NOT NULL,
+    sponsoring_user_id TEXT NOT NULL REFERENCES users(user_id),
+    requesting_agent_id TEXT REFERENCES agents(agent_id),
+    provider TEXT,
+    model TEXT,
+    lane TEXT,
+    transport TEXT,
+    prompt_sha256 TEXT NOT NULL,
+    prompt_preview TEXT NOT NULL,
+    disclosure_summary TEXT NOT NULL,
+    real_execution INTEGER NOT NULL DEFAULT 0 CHECK (real_execution IN (0, 1)),
+    outcome_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK (status IN ('executed', 'unavailable', 'failed')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_executions_route
+ON model_executions(model_route_decision_id);
+CREATE INDEX IF NOT EXISTS idx_model_executions_sponsor
+ON model_executions(sponsoring_user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_model_executions_provider
+ON model_executions(provider, model, lane, created_at);
+
+CREATE TABLE IF NOT EXISTS secret_records (
+    secret_id TEXT PRIMARY KEY,
+    handle_uri TEXT NOT NULL UNIQUE,
+    owner_type TEXT NOT NULL,
+    owner_ref TEXT NOT NULL,
+    scope_type TEXT,
+    scope_ref TEXT,
+    integration_type TEXT NOT NULL,
+    secret_kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'revoked', 'destroyed')),
+    current_version INTEGER NOT NULL DEFAULT 1,
+    fingerprint TEXT NOT NULL,
+    display_hint TEXT,
+    vault_backend TEXT NOT NULL,
+    vault_ref TEXT,
+    root_key_provider TEXT NOT NULL,
+    expires_at TEXT,
+    rotated_at TEXT,
+    revoked_at TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_secret_records_owner ON secret_records(owner_type, owner_ref, status);
+CREATE INDEX IF NOT EXISTS idx_secret_records_integration ON secret_records(integration_type, secret_kind, status);
+
+CREATE TABLE IF NOT EXISTS secret_access_events (
+    secret_access_event_id TEXT PRIMARY KEY,
+    secret_id TEXT NOT NULL REFERENCES secret_records(secret_id),
+    handle_uri TEXT NOT NULL,
+    secret_version INTEGER NOT NULL,
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'agent', 'sub_agent_run', 'system')),
+    actor_ref TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    integration_type TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_secret_access_events_secret ON secret_access_events(secret_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_secret_access_events_actor ON secret_access_events(actor_type, actor_ref, created_at);
+
+CREATE TABLE IF NOT EXISTS onboarding_bootstraps (
+    onboarding_bootstrap_id TEXT PRIMARY KEY,
+    primary_operator_user_id TEXT NOT NULL REFERENCES users(user_id),
+    custody_mode TEXT NOT NULL CHECK (custody_mode IN ('operator_passphrase', 'macos_keychain')),
+    custody_json TEXT NOT NULL DEFAULT '{}',
+    model_preference_id TEXT REFERENCES model_provider_preferences(model_preference_id),
+    provider TEXT,
+    model TEXT,
+    channels_json TEXT NOT NULL DEFAULT '[]',
+    secrets_json TEXT NOT NULL DEFAULT '[]',
+    readiness_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL CHECK (status IN ('ready', 'incomplete')),
+    created_by_type TEXT NOT NULL CHECK (created_by_type IN ('user', 'agent', 'system')),
+    created_by_ref TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_onboarding_bootstraps_operator
+ON onboarding_bootstraps(primary_operator_user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_onboarding_bootstraps_status
+ON onboarding_bootstraps(status, created_at);
 
 CREATE TABLE IF NOT EXISTS audit_events (
     audit_event_id TEXT PRIMARY KEY,

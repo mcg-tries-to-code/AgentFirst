@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 
 from agentfirst_storage import (
     AgentFirstStore,
     GovernedAction,
+    OperatorSurface,
     PolicyEngine,
     TaskEngine,
     TelegramBotApiTransport,
@@ -30,6 +35,31 @@ def main() -> None:
         )
         policy = PolicyEngine(store)
         task_engine = TaskEngine(store)
+        enrollment = telegram.issue_enrollment_challenge(
+            telegram_user_id="515151",
+            display_name="Real Telegram",
+            username="stage5_real_user",
+            requested_by_type="user",
+            requested_by_ref=admin["user_id"],
+        )
+        verified = telegram.verify_enrollment_challenge(
+            enrollment["enrollment_id"],
+            challenge_secret=enrollment["challenge_material"]["challenge_secret"],
+            challenge_nonce=enrollment["challenge_material"]["challenge_nonce"],
+            actor_type="system",
+            actor_ref="stage5_validation_pairing",
+        )
+        OperatorSurface(store).resolve_approval(
+            verified["metadata_json"]["approval_record_id"],
+            actor_user_id=admin["user_id"],
+            status="approved",
+            confirmation="APPROVED",
+        )
+        telegram.approve_enrollment(
+            verified["enrollment_id"],
+            user_id=admin["user_id"],
+            approver_user_id=admin["user_id"],
+        )
 
         inbound = telegram.ingest_message(
             {

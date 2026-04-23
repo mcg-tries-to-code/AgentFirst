@@ -19,11 +19,13 @@ Primary entry points:
 
 `ingest_message` accepts Telegram-shaped update dictionaries and:
 1. normalizes Telegram message fields
-2. resolves or creates a Telegram user channel identity
+2. requires an enrolled Telegram user channel identity
 3. resolves or creates the user's Telegram-facing AgentFirst agent
 4. resolves or creates a Telegram thread using the Telegram chat id
 5. persists the inbound message as a canonical `messages` row
 6. applies an explicit message-to-commitment intent path
+
+Unknown Telegram first contact is no longer trusted by this path. It is contained as external-channel discovery/enrollment state and does not create a canonical user, trusted channel identity, active thread, canonical message, or commitment.
 
 Supported v0 task intents:
 - `/commit ...`, `commit: ...`, `todo: ...`, or `task: ...` creates and activates a commitment
@@ -64,7 +66,7 @@ By default it refuses to surface internal-only progress updates.
 - Telegram chat identity is represented in thread participant metadata instead of adding Telegram-specific schema columns.
 - Transport send remains stubbed, but the canonical policy/audit/message path is real.
 - Intent parsing is deliberately explicit and narrow; broader language understanding can be added later without changing the canonical task path.
-- Unknown inbound Telegram users are created through the generic user creation path so the system remains cardinality-agnostic.
+- Unknown inbound Telegram users are not auto-created. Explicit enrollment must bind a discovered Telegram identity to a canonical user before trusted activation.
 
 ## Validation
 
@@ -75,7 +77,7 @@ PYTHONPATH=src python3 scripts/validate_stage4.py
 ```
 
 The validation proves:
-- inbound Telegram-shaped message becomes a durable active commitment
+- explicitly enrolled inbound Telegram-shaped message becomes a durable active commitment
 - a second inbound Telegram-shaped message updates that commitment
 - outbound Telegram-shaped message is policy-evaluated and auditable
 - user-visible progress update is surfaced through the Telegram outbound path

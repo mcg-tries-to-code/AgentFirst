@@ -16,6 +16,7 @@ The implementation is intentionally dependency-light and migration-friendly. SQL
 Identity and governance:
 
 - `users`: human principals, including authority tier, primary administrator flag, linked accounts, policy bindings, and contact identities.
+- `google_connections`: per-user Google Workspace account bindings with enabled services, opaque credential refs, policy refs, and lifecycle state.
 - `agents`: AI actors owned by exactly one user or shared context.
 - `shared_contexts`: group spaces for team/family/project scopes.
 - `shared_context_members`: user/agent membership in shared contexts.
@@ -43,12 +44,15 @@ Commitment-first work:
 Tooling, delegation, and research:
 
 - `tool_capabilities`: registered callable capabilities with provider, schemas, risk class, and audit requirements.
-- `tool_invocations`: concrete executions with invoker, sponsoring user, input/output refs, policy decision refs, and status.
+- `tool_invocations`: concrete executions with invoker, sponsoring user, authority decision, operation, scope, input/output refs, policy decision refs, provenance, outcome, and status.
+- `google_workspace_actions`: bounded Gmail, Calendar, Contacts, and Drive actions with authority linkage, tool invocation linkage, and per-user Google connection provenance.
 - `sub_agent_runs`: delegated execution records with scope and authority boundaries.
 - `memory_records`: canonical, mirror, derived, speculative, or scratch memories with owner scope and source refs.
 - `knowledge_corpora`: bounded retrieval spaces with source definitions, indexes, and policy refs.
 - `search_runs`: search query/result-set records with provider and freshness metadata.
 - `research_runs`: bounded research efforts linked to users, agents, sources, searches, outputs, and citations.
+- `model_provider_preferences`: explicit bounded model/provider preferences for user, agent, and task scopes.
+- `model_route_decisions`: governed route decisions with preferred/selected provider, fallback disclosure, policy linkage, and provenance.
 - `artifacts`: documents and durable deliverables with filesystem storage refs, owner scope, classification, and provenance.
 
 Audit and policy:
@@ -66,6 +70,7 @@ Strict foreign keys are used where the v0 ownership edge is unambiguous and stab
 - `authority_grants.grantor_user_id -> users.user_id`
 - `authority_grants.grantee_user_id -> users.user_id`
 - `authority_grants.grantee_agent_id -> agents.agent_id`
+- `google_connections.user_id -> users.user_id`
 - `channel_identities.user_id -> users.user_id`
 - `channel_identities.agent_id -> agents.agent_id`
 - `threads` to commitments/projects through JSON link arrays for v0 lightweight many-to-many linkage
@@ -78,8 +83,18 @@ Strict foreign keys are used where the v0 ownership edge is unambiguous and stab
 - `tool_invocations.tool_capability_id -> tool_capabilities.tool_capability_id`
 - `tool_invocations.sponsoring_user_id -> users.user_id`
 - `tool_invocations.invoker_agent_id -> agents.agent_id`
+- `tool_invocations.authority_policy_decision_id -> policy_decisions.policy_decision_id`
+- `google_workspace_actions.google_connection_id -> google_connections.google_connection_id`
+- `google_workspace_actions.google_connection_user_id -> users.user_id`
+- `google_workspace_actions.tool_invocation_id -> tool_invocations.tool_invocation_id`
+- `google_workspace_actions.authority_policy_decision_id -> policy_decisions.policy_decision_id`
 - `sub_agent_runs.parent_agent_id -> agents.agent_id`
 - `sub_agent_runs.sponsor_user_id -> users.user_id`
+- `model_route_decisions.model_preference_id -> model_provider_preferences.model_preference_id`
+- `model_route_decisions.sponsoring_user_id -> users.user_id`
+- `model_route_decisions.requesting_agent_id -> agents.agent_id`
+- `model_route_decisions.policy_decision_id -> policy_decisions.policy_decision_id`
+- `model_route_decisions.approval_record_id -> approval_records.approval_record_id`
 - `policy_decisions.sponsoring_user_id -> users.user_id`
 - `audit_events.policy_decision_id -> policy_decisions.policy_decision_id`
 - `event_log.audit_event_id -> audit_events.audit_event_id`
@@ -109,6 +124,7 @@ Artifacts are not stored as blobs in the canonical database. The storage layer w
 - message content uses `messages.content_ref`
 - generated documents use `artifacts.storage_ref`
 - tool inputs/outputs use `tool_invocations.input_ref` and `tool_invocations.output_ref`
+- consequential tool provenance uses `tool_invocations.scope_json`, `provenance_json`, and `outcome_json`
 - memory and research outputs use `content_ref`, `working_notes_ref`, and `output_ref`
 
 Canonical rows carry ownership, classification, provenance, source refs, and project refs so files do not become scattered canonical state.

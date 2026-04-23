@@ -246,12 +246,24 @@ class ResearchService:
             f"research/{research['research_run_id']}/search-results.json",
             json.dumps(
                 {
+                    "bounded_version": "v1-chunk8",
                     "provider": provider_response.provider,
                     "query": provider_response.query,
                     "request_url": provider_response.request_url,
                     "status_code": provider_response.status_code,
                     "fetched_at": provider_response.fetched_at,
-                    "results": provider_response.results,
+                    "results": [
+                        {
+                            **result,
+                            "provenance": self._result_provenance(
+                                result,
+                                provider_response,
+                                policy_result["decision"]["policy_decision_id"],
+                                invocation["tool_invocation_id"],
+                            ),
+                        }
+                        for result in provider_response.results
+                    ],
                     "raw": provider_response.raw,
                     "policy_decision_id": policy_result["decision"]["policy_decision_id"],
                     "tool_invocation_id": invocation["tool_invocation_id"],
@@ -267,6 +279,7 @@ class ResearchService:
                 "provider": provider_response.provider,
                 "filters_json": {"limit": limit},
                 "request_context_json": {
+                    "bounded_version": "v1-chunk8",
                     "research_run_id": research["research_run_id"],
                     "tool_invocation_id": invocation["tool_invocation_id"],
                     "policy_decision_id": policy_result["decision"]["policy_decision_id"],
@@ -274,11 +287,32 @@ class ResearchService:
                     "commitment_id": commitment_id,
                     "live_external_provider": True,
                     "request_url": provider_response.request_url,
+                    "provenance": {
+                        "provider": provider_response.provider,
+                        "destination_type": self.provider.destination_type,
+                        "destination_identity": self.provider.destination_identity,
+                        "query": provider_response.query,
+                        "fetched_at": provider_response.fetched_at,
+                        "policy_decision_id": policy_result["decision"]["policy_decision_id"],
+                        "tool_invocation_id": invocation["tool_invocation_id"],
+                    },
+                    "citations": [
+                        self._result_provenance(
+                            result,
+                            provider_response,
+                            policy_result["decision"]["policy_decision_id"],
+                            invocation["tool_invocation_id"],
+                        )
+                        for result in provider_response.results
+                        if result.get("url")
+                    ],
                 },
                 "results_ref": results_ref,
                 "freshness_metadata_json": {
+                    "bounded_version": "v1-chunk8",
                     "fetched_at": provider_response.fetched_at,
                     "provider_status_code": provider_response.status_code,
+                    "provider": provider_response.provider,
                 },
                 "status": "returned",
             },
@@ -339,6 +373,8 @@ class ResearchService:
                     "result_count": len(provider_response.results),
                     "provider_status_code": provider_response.status_code,
                     "live_external_provider": True,
+                    "bounded_version": "v1-chunk8",
+                    "citation_count": len([result for result in provider_response.results if result.get("url")]),
                 },
             },
             actor_type=actor_type,
@@ -445,6 +481,28 @@ class ResearchService:
                 "",
             ]
         )
+
+    def _result_provenance(
+        self,
+        result: dict[str, Any],
+        response: SearchProviderResponse,
+        policy_decision_id: str,
+        tool_invocation_id: str,
+    ) -> dict[str, Any]:
+        return {
+            "bounded_version": "v1-chunk8",
+            "source_type": "web_search_result",
+            "provider": response.provider,
+            "query": response.query,
+            "request_url": response.request_url,
+            "fetched_at": response.fetched_at,
+            "title": result.get("title"),
+            "url": result.get("url"),
+            "provider_page_id": result.get("page_id"),
+            "provider_timestamp": result.get("timestamp"),
+            "policy_decision_id": policy_decision_id,
+            "tool_invocation_id": tool_invocation_id,
+        }
 
 
 def _clean_snippet(snippet: str) -> str:

@@ -96,3 +96,4 @@ Most notably, channel enrollment and binding across external channels should not
 1. preserve this repo state with an initial clean commit and v0 tag
 2. produce a short V1 hardening agenda derived from the checklist
 3. begin with channel enrollment/binding security review before broader V1 expansion
+4. use the pre-V1 security audit work package from the planning workspace as the initial audit package for the pre-V1 security review

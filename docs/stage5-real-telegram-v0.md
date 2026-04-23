@@ -26,7 +26,7 @@ When an outbound message is policy-allowed and a `TelegramBotApiTransport` is co
 
 Actually real in Stage 5:
 - Telegram webhook-shaped inbound payloads are accepted at the channel adapter boundary.
-- Telegram user identity, bot identity, thread, inbound message, commitment, attention, progress, policy, audit, and event rows are persisted in the canonical store.
+- Explicitly enrolled Telegram user identity, bot identity, thread, inbound message, commitment, attention, progress, policy, audit, and event rows are persisted in the canonical store.
 - Policy-allowed outbound Telegram messages produce a concrete Telegram Bot API `sendMessage` request artifact with HTTP method, URL template, headers, and JSON body.
 - Policy-gated private outbound messages create policy decisions, approval records, audit events, and blocked transport progression.
 - Sub-agent delegation/reconciliation now runs through task-engine methods instead of direct status mutation.
@@ -40,7 +40,7 @@ Still stubbed or not exercised:
 ## v0 Scenario Coverage
 
 The Stage 5 validation script covers these v0 scenarios:
-- inbound Telegram request becomes durable task
+- enrolled inbound Telegram request becomes durable task
 - policy-gated outbound Telegram action
 - delegated sub-agent work and reconciliation
 - waiting vs blocked distinction

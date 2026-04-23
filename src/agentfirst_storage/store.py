@@ -14,6 +14,8 @@ from .schema import DDL, SCHEMA_VERSION
 JSON_COLUMNS = {
     "audit_requirements_json",
     "metadata_json",
+    "services_json",
+    "scopes_json",
     "contact_identities_json",
     "linked_accounts_json",
     "policy_bindings_json",
@@ -35,6 +37,8 @@ JSON_COLUMNS = {
     "logging_requirements_json",
     "override_rules_json",
     "routing_policy_refs_json",
+    "first_seen_metadata_json",
+    "last_seen_metadata_json",
     "participants_json",
     "goals_json",
     "milestones_json",
@@ -42,6 +46,11 @@ JSON_COLUMNS = {
     "linked_project_ids_json",
     "linked_commitment_ids_json",
     "source_refs_json",
+    "requested_scopes_json",
+    "allowed_scopes_json",
+    "denied_scopes_json",
+    "authority_policy_decision_refs_json",
+    "result_refs_json",
     "project_refs_json",
     "provenance_json",
     "waiting_on_json",
@@ -51,6 +60,13 @@ JSON_COLUMNS = {
     "recipient_identities_json",
     "attachments_json",
     "policy_decision_refs_json",
+    "behavior_json",
+    "context_json",
+    "runtime_state_json",
+    "checkpoint_payload_json",
+    "preserved_refs_json",
+    "dropped_ephemeral_json",
+    "wiki_candidate_refs_json",
     "state_change_json",
     "visibility_policy_refs_json",
     "completion_criteria_snapshot_json",
@@ -70,23 +86,38 @@ JSON_COLUMNS = {
     "citation_refs_json",
     "payload_json",
     "resolution_options_json",
+    "input_json",
+    "result_json",
+    "outcome_json",
+    "fallback_routes_json",
+    "provider_metadata_json",
+    "custody_json",
+    "channels_json",
+    "secrets_json",
+    "readiness_json",
 }
 
 
 PRIMARY_KEYS = {
     "users": "user_id",
+    "google_connections": "google_connection_id",
     "shared_contexts": "shared_context_id",
     "agents": "agent_id",
     "authority_grants": "grant_id",
     "policies": "policy_id",
     "data_classification_rules": "rule_id",
     "destination_trust_tiers": "destination_id",
+    "external_channel_discoveries": "discovery_id",
+    "channel_enrollments": "enrollment_id",
     "channel_identities": "channel_identity_id",
     "projects": "project_id",
     "threads": "thread_id",
     "artifacts": "artifact_id",
     "commitments": "commitment_id",
     "messages": "message_event_id",
+    "conversation_lanes": "lane_id",
+    "lane_active_contexts": "active_context_id",
+    "lane_checkpoints": "checkpoint_id",
     "progress_updates": "progress_update_id",
     "task_attention_records": "attention_record_id",
     "waiting_conditions": "waiting_condition_id",
@@ -96,11 +127,19 @@ PRIMARY_KEYS = {
     "policy_decisions": "policy_decision_id",
     "approval_records": "approval_record_id",
     "tool_invocations": "tool_invocation_id",
+    "google_workspace_actions": "google_workspace_action_id",
     "sub_agent_runs": "sub_agent_run_id",
     "memory_records": "memory_id",
+    "memory_retrievals": "retrieval_id",
     "knowledge_corpora": "corpus_id",
     "search_runs": "search_run_id",
     "research_runs": "research_run_id",
+    "model_provider_preferences": "model_preference_id",
+    "model_route_decisions": "model_route_decision_id",
+    "model_executions": "model_execution_id",
+    "secret_records": "secret_id",
+    "secret_access_events": "secret_access_event_id",
+    "onboarding_bootstraps": "onboarding_bootstrap_id",
     "audit_events": "audit_event_id",
 }
 
@@ -127,6 +166,7 @@ class AgentFirstStore:
         self.artifact_root.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(DDL)
+            self._apply_lightweight_migrations(conn)
             conn.execute(
                 "INSERT OR IGNORE INTO schema_migrations(version) VALUES (?)",
                 (SCHEMA_VERSION,),
@@ -283,6 +323,15 @@ class AgentFirstStore:
             raise ValueError("member_type must be 'user' or 'agent'")
         self.initialize()
         with self.connect() as conn:
+            context = self.get_by_id("shared_contexts", shared_context_id, conn=conn)
+            if context is None:
+                raise ValueError(f"Shared context not found: {shared_context_id}")
+            if member_type == "user":
+                member = self.get_by_id("users", member_ref, conn=conn)
+            else:
+                member = self.get_by_id("agents", member_ref, conn=conn)
+            if member is None:
+                raise ValueError(f"{member_type} member not found: {member_ref}")
             conn.execute(
                 """
                 INSERT INTO shared_context_members (
@@ -510,6 +559,258 @@ class AgentFirstStore:
         finally:
             if owns_connection:
                 conn.close()
+
+    def _apply_lightweight_migrations(self, conn: sqlite3.Connection) -> None:
+        """Keep pre-existing local v0 databases usable as V1 columns are added."""
+        channel_existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(channel_identities)").fetchall()
+        }
+        channel_additions = [
+            ("enrollment_id", "TEXT REFERENCES channel_enrollments(enrollment_id)"),
+            ("enrollment_state", "TEXT NOT NULL DEFAULT 'legacy_active'"),
+            ("binding_generation", "INTEGER NOT NULL DEFAULT 1"),
+        ]
+        for column, definition in channel_additions:
+            if column not in channel_existing:
+                conn.execute(f"ALTER TABLE channel_identities ADD COLUMN {column} {definition}")
+
+        invocation_existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(tool_invocations)").fetchall()
+        }
+        invocation_additions = [
+            ("authority_policy_decision_id", "TEXT REFERENCES policy_decisions(policy_decision_id)"),
+            ("operation", "TEXT"),
+            ("scope_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("provenance_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("outcome_json", "TEXT NOT NULL DEFAULT '{}'"),
+        ]
+        for column, definition in invocation_additions:
+            if column not in invocation_existing:
+                conn.execute(f"ALTER TABLE tool_invocations ADD COLUMN {column} {definition}")
+
+        google_existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(google_connections)").fetchall()
+        }
+        google_additions = [
+            ("credential_secret_id", "TEXT REFERENCES secret_records(secret_id)"),
+        ]
+        for column, definition in google_additions:
+            if column not in google_existing:
+                conn.execute(f"ALTER TABLE google_connections ADD COLUMN {column} {definition}")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_retrievals (
+                retrieval_id TEXT PRIMARY KEY,
+                actor_user_id TEXT NOT NULL REFERENCES users(user_id),
+                sponsoring_user_id TEXT NOT NULL REFERENCES users(user_id),
+                query TEXT NOT NULL,
+                requested_scopes_json TEXT NOT NULL DEFAULT '[]',
+                allowed_scopes_json TEXT NOT NULL DEFAULT '[]',
+                denied_scopes_json TEXT NOT NULL DEFAULT '[]',
+                authority_policy_decision_refs_json TEXT NOT NULL DEFAULT '[]',
+                result_refs_json TEXT NOT NULL DEFAULT '[]',
+                provenance_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL CHECK (status IN ('returned', 'denied', 'empty')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memory_retrievals_actor
+            ON memory_retrievals(actor_user_id, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memory_retrievals_sponsor
+            ON memory_retrievals(sponsoring_user_id, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_lanes (
+                lane_id TEXT PRIMARY KEY,
+                owner_scope_type TEXT NOT NULL CHECK (owner_scope_type IN ('user', 'agent', 'shared_context', 'project')),
+                owner_scope_ref TEXT NOT NULL,
+                lane_key TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'general',
+                behavior_json TEXT NOT NULL DEFAULT '{}',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                UNIQUE(owner_scope_type, owner_scope_ref, lane_key)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_conversation_lanes_owner
+            ON conversation_lanes(owner_scope_type, owner_scope_ref, status)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lane_active_contexts (
+                active_context_id TEXT PRIMARY KEY,
+                lane_id TEXT NOT NULL REFERENCES conversation_lanes(lane_id),
+                session_generation INTEGER NOT NULL DEFAULT 1,
+                context_json TEXT NOT NULL DEFAULT '{}',
+                runtime_state_json TEXT NOT NULL DEFAULT '{}',
+                source_refs_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cleared', 'reinitialized')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_lane_active_contexts_lane
+            ON lane_active_contexts(lane_id, status, session_generation)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lane_checkpoints (
+                checkpoint_id TEXT PRIMARY KEY,
+                lane_id TEXT NOT NULL REFERENCES conversation_lanes(lane_id),
+                active_context_id TEXT REFERENCES lane_active_contexts(active_context_id),
+                reset_command TEXT NOT NULL CHECK (reset_command IN ('/new', '/restart')),
+                owner_scope_type TEXT NOT NULL CHECK (owner_scope_type IN ('user', 'agent', 'shared_context', 'project')),
+                owner_scope_ref TEXT NOT NULL,
+                lifecycle_layer TEXT NOT NULL DEFAULT 'mid_term_checkpoint',
+                summary_ref TEXT NOT NULL,
+                checkpoint_payload_json TEXT NOT NULL DEFAULT '{}',
+                preserved_refs_json TEXT NOT NULL DEFAULT '[]',
+                dropped_ephemeral_json TEXT NOT NULL DEFAULT '[]',
+                memory_record_id TEXT REFERENCES memory_records(memory_id),
+                wiki_candidate_refs_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'captured' CHECK (status IN ('captured', 'empty')),
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_lane_checkpoints_lane
+            ON lane_checkpoints(lane_id, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_lane_checkpoints_owner
+            ON lane_checkpoints(owner_scope_type, owner_scope_ref, created_at)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS secret_records (
+                secret_id TEXT PRIMARY KEY,
+                handle_uri TEXT NOT NULL UNIQUE,
+                owner_type TEXT NOT NULL,
+                owner_ref TEXT NOT NULL,
+                scope_type TEXT,
+                scope_ref TEXT,
+                integration_type TEXT NOT NULL,
+                secret_kind TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'revoked', 'destroyed')),
+                current_version INTEGER NOT NULL DEFAULT 1,
+                fingerprint TEXT NOT NULL,
+                display_hint TEXT,
+                vault_backend TEXT NOT NULL,
+                vault_ref TEXT,
+                root_key_provider TEXT NOT NULL,
+                expires_at TEXT,
+                rotated_at TEXT,
+                revoked_at TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_secret_records_owner
+            ON secret_records(owner_type, owner_ref, status)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_secret_records_integration
+            ON secret_records(integration_type, secret_kind, status)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS secret_access_events (
+                secret_access_event_id TEXT PRIMARY KEY,
+                secret_id TEXT NOT NULL REFERENCES secret_records(secret_id),
+                handle_uri TEXT NOT NULL,
+                secret_version INTEGER NOT NULL,
+                actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'agent', 'sub_agent_run', 'system')),
+                actor_ref TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                purpose TEXT NOT NULL,
+                integration_type TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_secret_access_events_secret
+            ON secret_access_events(secret_id, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_secret_access_events_actor
+            ON secret_access_events(actor_type, actor_ref, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS onboarding_bootstraps (
+                onboarding_bootstrap_id TEXT PRIMARY KEY,
+                primary_operator_user_id TEXT NOT NULL REFERENCES users(user_id),
+                custody_mode TEXT NOT NULL CHECK (custody_mode IN ('operator_passphrase', 'macos_keychain')),
+                custody_json TEXT NOT NULL DEFAULT '{}',
+                model_preference_id TEXT REFERENCES model_provider_preferences(model_preference_id),
+                provider TEXT,
+                model TEXT,
+                channels_json TEXT NOT NULL DEFAULT '[]',
+                secrets_json TEXT NOT NULL DEFAULT '[]',
+                readiness_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL CHECK (status IN ('ready', 'incomplete')),
+                created_by_type TEXT NOT NULL CHECK (created_by_type IN ('user', 'agent', 'system')),
+                created_by_ref TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_onboarding_bootstraps_operator
+            ON onboarding_bootstraps(primary_operator_user_id, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_onboarding_bootstraps_status
+            ON onboarding_bootstraps(status, created_at)
+            """
+        )
 
     def _encode_value(self, key: str, value: Any) -> Any:
         if key.endswith("_json") or key in JSON_COLUMNS:
