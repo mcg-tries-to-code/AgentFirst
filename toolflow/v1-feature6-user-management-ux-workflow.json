@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "toolflow.workflow/v1",
+  "name": "agentfirst-v1-feature6-user-management-ux-build",
+  "steps": [
+    {
+      "id": "build_feature6_with_codex",
+      "action": "exec_command",
+      "args": {
+        "cwd": ".",
+        "command": [
+          "bash",
+          "-lc",
+          "codex exec --full-auto --skip-git-repo-check \"Implement AgentFirst V1 Feature 6 user-management UX after Feature 5. Work only inside the repository root and do not revert unrelated changes. Read and follow these docs first: docs/v1-feature6-user-management-ux.md, docs/validation/v1-feature6-user-management-ux-validation-plan.md, docs/v1-feature5-real-inbox.md, docs/v1-chunk2-multi-user-authority.md, docs/v1-chunk10-audit-tui.md. Build a bounded, auditable user-management UX in the trusted local TUI and operator surface. Minimum deliverables: (1) add practical user list/detail views with authority, identities, enrollments, and degraded-state visibility, (2) add explicit consequential admin actions for at least create, suspend, and reactivate user with confirmation and audit/event evidence, (3) keep read-only inspection distinct from admin mutation, (4) create a validation script at scripts/validate_v1_feature6_user_management_ux.py, (5) update docs to match implemented behavior and validation. Reuse existing canonical store/service logic where sensible, add bounded service methods if needed, and do not bypass enrollment or policy controls. After coding, run python3 -m compileall src and python3 scripts/validate_v1_feature6_user_management_ux.py, fix failures, then stop. In your final output, include files changed, behavior implemented, validation commands run, and residual limitations.\""
+        ]
+      }
+    },
+    {
+      "id": "compile_after_feature6",
+      "action": "exec_command",
+      "dependsOn": [
+        "build_feature6_with_codex"
+      ],
+      "args": {
+        "cwd": ".",
+        "command": [
+          "python3",
+          "-m",
+          "compileall",
+          "src/agentfirst_storage"
+        ]
+      }
+    },
+    {
+      "id": "validate_feature6",
+      "action": "exec_command",
+      "dependsOn": [
+        "compile_after_feature6"
+      ],
+      "args": {
+        "cwd": ".",
+        "command": [
+          "python3",
+          "scripts/validate_v1_feature6_user_management_ux.py"
+        ]
+      }
+    }
+  ]
+}

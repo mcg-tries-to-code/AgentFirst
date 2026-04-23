@@ -1,0 +1,48 @@
+{
+  "schemaVersion": "toolflow.workflow/v1",
+  "name": "agentfirst-v1-feature5-real-inbox-build",
+  "steps": [
+    {
+      "id": "build_feature5_with_codex",
+      "action": "exec_command",
+      "args": {
+        "cwd": ".",
+        "command": [
+          "bash",
+          "-lc",
+          "codex exec --full-auto --skip-git-repo-check \"Implement AgentFirst V1 Feature 5 real inbox in the existing trusted local TUI and operator surface. Work only inside the repository root and do not revert unrelated changes. Read and follow these docs first: docs/v1-feature5-real-inbox.md, docs/validation/v1-feature5-real-inbox-validation-plan.md, docs/v1-multimode-tui-spec.md, docs/v1-chunk10-audit-tui.md, docs/v1-feature6-user-management-ux.md. Build a truthful read-only inbox surface over canonical local state, not fake live messaging. Minimum deliverables: (1) add operator-surface methods and TUI commands for inbox list and thread detail, with honest empty/degraded/approval-gated/local-draft disclosure, (2) extend the chat mode so it can inspect the real local inbox instead of only a compose scaffold, while preserving explicit no-live-channel boundaries, (3) create a validation script at scripts/validate_v1_feature5_real_inbox.py, (4) add or update docs needed to describe implemented behavior and validation, (5) ensure read-only inbox inspection does not mutate audit/event state. Prefer existing tables like threads, messages, commitments, approval_records, channel identities/enrollments, and lane metadata. Add bounded helper methods if schema changes are unnecessary. After coding, run python3 -m compileall src and python3 scripts/validate_v1_feature5_real_inbox.py, fix failures, then stop. In your final output, include files changed, behavior implemented, validation commands run, and residual limitations.\""
+        ]
+      }
+    },
+    {
+      "id": "compile_after_feature5",
+      "action": "exec_command",
+      "dependsOn": [
+        "build_feature5_with_codex"
+      ],
+      "args": {
+        "cwd": ".",
+        "command": [
+          "python3",
+          "-m",
+          "compileall",
+          "src/agentfirst_storage"
+        ]
+      }
+    },
+    {
+      "id": "validate_feature5",
+      "action": "exec_command",
+      "dependsOn": [
+        "compile_after_feature5"
+      ],
+      "args": {
+        "cwd": ".",
+        "command": [
+          "python3",
+          "scripts/validate_v1_feature5_real_inbox.py"
+        ]
+      }
+    }
+  ]
+}

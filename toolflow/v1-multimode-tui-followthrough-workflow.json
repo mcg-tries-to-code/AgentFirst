@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "toolflow.workflow/v1",
+  "name": "agentfirst-v1-multimode-tui-followthrough",
+  "steps": [
+    {
+      "id": "apply_multimode_tui_followthrough",
+      "action": "exec_command",
+      "args": {
+        "cwd": ".",
+        "command": [
+          "python3",
+          "scripts/toolflow_apply_v1_multimode_tui_followthrough.py"
+        ]
+      }
+    },
+    {
+      "id": "compile_agentfirst_storage",
+      "action": "exec_command",
+      "dependsOn": [
+        "apply_multimode_tui_followthrough"
+      ],
+      "args": {
+        "cwd": ".",
+        "command": [
+          "python3",
+          "-m",
+          "compileall",
+          "src/agentfirst_storage"
+        ]
+      }
+    },
+    {
+      "id": "validate_chunk10_multimode_tui",
+      "action": "exec_command",
+      "dependsOn": [
+        "compile_agentfirst_storage"
+      ],
+      "args": {
+        "cwd": ".",
+        "command": [
+          "python3",
+          "scripts/validate_v1_chunk10_audit_tui.py"
+        ]
+      }
+    }
+  ]
+}
